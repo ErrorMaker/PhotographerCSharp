@@ -4,7 +4,7 @@ using System.Text;
 using System.Security.Cryptography;
 using System.Globalization;
 
-namespace Photographer
+namespace Photographer.Encryption
 {
     public enum PKCSPadding
     {

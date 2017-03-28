@@ -1,4 +1,6 @@
-﻿using Photographer.Protocol;
+﻿using Photographer.Encryption;
+using Photographer.Protocol;
+using Photographer.Protocol.Encryption;
 using System;
 using System.Net;
 using System.Net.Sockets;
