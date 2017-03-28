@@ -1,26 +1,13 @@
 ﻿using System;
-using System.Numerics;
 using System.Text;
-using System.Security.Cryptography;
+using System.Numerics;
 using System.Globalization;
 
-namespace Photographer.Encryption
+namespace Photographer.Crypto
 {
-    public enum PKCSPadding
+    public class HKeyExchange
     {
-        /// <summary>
-        /// Represents a padding type that will fill a byte array's empty indices with the maximum value of a <see cref="byte"/>.
-        /// </summary>
-        MaxByte = 1,
-        /// <summary>
-        /// Represents a padding type that will fill a byte array's empty indices with random byte values.
-        /// </summary>
-        RandomByte = 2
-    }
-
-    public class HKeyExchange : IDisposable
-    {
-        private readonly int _blockSize;
+        private const int BLOCK_SIZE = 128;
         private readonly Random _numberGenerator;
 
         public BigInteger Modulus { get; }
@@ -37,35 +24,27 @@ namespace Photographer.Encryption
         public bool CanDecrypt => (PrivateExponent != BigInteger.Zero);
         public PKCSPadding Padding { get; set; } = PKCSPadding.MaxByte;
 
-        private HKeyExchange() {
+        private HKeyExchange()
+        {
             _numberGenerator = new Random();
         }
 
-        public HKeyExchange(int exponent, string modulus) :
-            this(exponent, modulus, string.Empty)
+        public HKeyExchange(int exponent, string modulus)
+            : this(exponent, modulus, string.Empty)
         { }
-        public HKeyExchange(int exponent, string modulus, string privateExponent) :
-            this()
+        public HKeyExchange(int exponent, string modulus, string privateExponent)
+            : this()
         {
-            var keys = new RSAParameters();
             Exponent = new BigInteger(exponent);
-            keys.Exponent = Exponent.ToByteArray();
-
             Modulus = BigInteger.Parse("0" + modulus, NumberStyles.HexNumber);
-            keys.Modulus = Modulus.ToByteArray();
-            Array.Reverse(keys.Modulus);
 
             if (!string.IsNullOrWhiteSpace(privateExponent))
             {
                 PrivateExponent = BigInteger.Parse("0" + privateExponent, NumberStyles.HexNumber);
-                keys.D = PrivateExponent.ToByteArray();
-                Array.Reverse(keys.D);
 
                 GenerateDHPrimes(256);
                 GenerateDHKeys(DHPrime, DHGenerator);
             }
-
-            _blockSize = 128;
         }
 
         public virtual string GetSignedP()
@@ -97,15 +76,15 @@ namespace Photographer.Encryption
             DHPrime = Verify(p);
             if (DHPrime <= 2)
             {
-                throw new Exception(
-                    "P cannot be <= 2!\r\n" + DHPrime);
+                throw new ArgumentException(
+                    "P cannot be less than, or equal to 2.\r\n" + DHPrime, nameof(DHPrime));
             }
 
             DHGenerator = Verify(g);
             if (DHGenerator >= DHPrime)
             {
-                throw new Exception(
-                    $"G cannot be >= P!\r\n{DHPrime}\r\n{DHGenerator}");
+                throw new ArgumentException(
+                    $"G cannot be greater than, or equal to P.\r\n{DHPrime}\r\n{DHGenerator}", nameof(DHGenerator));
             }
 
             GenerateDHKeys(DHPrime, DHGenerator);
@@ -131,7 +110,7 @@ namespace Photographer.Encryption
 
         protected virtual byte[] PKCSPad(byte[] data)
         {
-            var buffer = new byte[_blockSize - 1];
+            var buffer = new byte[BLOCK_SIZE - 1];
             int dataStartPos = (buffer.Length - data.Length);
 
             buffer[0] = (byte)Padding;
@@ -185,8 +164,6 @@ namespace Photographer.Encryption
 
         protected virtual void GenerateDHPrimes(int bitSize)
         {
-            /* TODO: Create "real" primes, or at least something close to a real prime.
-             * These values are currently just strong random generated numbers, but hey, it's faster. */
             DHPrime = RandomInteger(bitSize);
             DHGenerator = RandomInteger(bitSize);
 
@@ -230,20 +207,35 @@ namespace Photographer.Encryption
             return BigInteger.Parse(Encoding.UTF8.GetString(valueData));
         }
 
-        public virtual BigInteger CalculatePrivate(BigInteger value) =>
-            BigInteger.ModPow(value, PrivateExponent, Modulus);
-
-        public virtual BigInteger CalculatePublic(BigInteger value) =>
-            BigInteger.ModPow(value, Exponent, Modulus);
-
-        public void Dispose()
+        private byte[] ReverseNull(byte[] data)
         {
-            Dispose(true);
+            bool isNegative = false;
+            int newSize = data.Length;
+            if (data[0] > 127)
+            {
+                newSize += 1;
+                isNegative = true;
+            }
+
+            var reversed = new byte[newSize];
+            for (int i = 0; i < data.Length; i++)
+            {
+                reversed[i] = data[data.Length - (i + 1)];
+            }
+            if (isNegative)
+            {
+                reversed[reversed.Length - 1] = 0;
+            }
+            return reversed;
         }
-        protected virtual void Dispose(bool disposing)
+
+        public virtual BigInteger CalculatePublic(BigInteger value)
         {
-            if (IsDisposed) return;
-            IsDisposed = true;
+            return BigInteger.ModPow(value, Exponent, Modulus);
+        }
+        public virtual BigInteger CalculatePrivate(BigInteger value)
+        {
+            return BigInteger.ModPow(value, PrivateExponent, Modulus);
         }
     }
 }

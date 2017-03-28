@@ -4,13 +4,15 @@ using System.Diagnostics;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
-namespace Photographer.Protocol
+namespace Photographer.Network.Protocol
 {
     [DebuggerDisplay("Header: {Header}, Length: {Length} | {ToString()}")]
-    public sealed class HMessage
+    public class HMessage
     {
+        private static readonly Regex _paramGrabber;
+        private static readonly Regex _fieldGrabber;
+
         private readonly List<byte> _body;
-        private static readonly Regex _valueGrabber;
 
         private string _toStringCache;
         private byte[] _toBytesCache, _bodyBuffer;
@@ -40,7 +42,6 @@ namespace Photographer.Protocol
         public int Length => (_body.Count + (!IsCorrupted ? 2 : 0));
 
         public bool IsCorrupted { get; }
-        public HDestination Destination { get; set; }
 
         private readonly List<object> _read;
         public IReadOnlyList<object> ValuesRead { get; }
@@ -50,7 +51,8 @@ namespace Photographer.Protocol
 
         static HMessage()
         {
-            _valueGrabber = new Regex(@"{(?<type>u|s|i|b):(?<value>[^}]*)\}", RegexOptions.IgnoreCase);
+            _fieldGrabber = new Regex(@"%(?<field>.*?)%", RegexOptions.IgnoreCase);
+            _paramGrabber = new Regex(@"{(?<type>s|i|b|d|u|\$(?<special>.*?)):(?<value>[^}]*)\}", RegexOptions.IgnoreCase);
         }
         private HMessage()
         {
@@ -61,27 +63,10 @@ namespace Photographer.Protocol
             ValuesRead = _read.AsReadOnly();
             ValuesWritten = _written.AsReadOnly();
         }
-
-        public HMessage(ushort header, params object[] values)
-            : this(Construct(header, values), HDestination.Client)
-        {
-            _written.AddRange(values);
-        }
-
-        public HMessage(string data)
-            : this(data, HDestination.Client)
-        { }
-        public HMessage(string data, HDestination destination)
-            : this(ToBytes(data), destination)
-        { }
-
+        
         public HMessage(byte[] data)
-            : this(data, HDestination.Client)
-        { }
-        public HMessage(byte[] data, HDestination destination)
             : this()
         {
-            Destination = destination;
             IsCorrupted = (data.Length < 6 ||
                 (BigEndian.ToInt32(data, 0) != data.Length - 4));
 
@@ -94,6 +79,14 @@ namespace Photographer.Protocol
             }
             else _bodyBuffer = data;
             _body.AddRange(_bodyBuffer);
+        }
+        public HMessage(string value)
+            : this(ToBytes(value))
+        { }
+        public HMessage(ushort header, params object[] values)
+            : this(Construct(header, values))
+        {
+            _written.AddRange(values);
         }
 
         #region Read Methods
@@ -108,7 +101,24 @@ namespace Photographer.Protocol
         public int ReadInteger(ref int position)
         {
             int value = BigEndian.ToInt32(_bodyBuffer, position);
-            position += BigEndian.GetSize(value);
+            position += 4;
+
+            _read.Add(value);
+            return value;
+        }
+
+        public double ReadDouble()
+        {
+            return ReadDouble(ref _position);
+        }
+        public double ReadDouble(int position)
+        {
+            return ReadDouble(ref position);
+        }
+        public double ReadDouble(ref int position)
+        {
+            double value = BigEndian.ToDouble(_bodyBuffer, position);
+            position += 8;
 
             _read.Add(value);
             return value;
@@ -125,7 +135,7 @@ namespace Photographer.Protocol
         public ushort ReadShort(ref int position)
         {
             ushort value = BigEndian.ToUInt16(_bodyBuffer, position);
-            position += BigEndian.GetSize(value);
+            position += 2;
 
             _read.Add(value);
             return value;
@@ -142,7 +152,7 @@ namespace Photographer.Protocol
         public bool ReadBoolean(ref int position)
         {
             bool value = BigEndian.ToBoolean(_bodyBuffer, position);
-            position += BigEndian.GetSize(value);
+            position += 1;
 
             _read.Add(value);
             return value;
@@ -193,7 +203,15 @@ namespace Photographer.Protocol
             byte[] encoded = BigEndian.GetBytes(value);
             WriteObject(encoded, value, position);
         }
-
+        public void WriteDouble(double value)
+        {
+            WriteDouble(value, _body.Count);
+        }
+        public void WriteDouble(double value, int position)
+        {
+            byte[] encoded = BigEndian.GetBytes(value);
+            WriteObject(encoded, value, position);
+        }
         public void WriteShort(ushort value)
         {
             WriteShort(value, _body.Count);
@@ -393,7 +411,7 @@ namespace Photographer.Protocol
         }
         public static string ToString(byte[] data)
         {
-            string result = Encoding.ASCII.GetString(data);
+            string result = Encoding.GetEncoding(0).GetString(data);
             for (int i = 0; i <= 13; i++)
             {
                 result = result.Replace(
@@ -412,64 +430,95 @@ namespace Photographer.Protocol
         }
         public static byte[] ToBytes(string packet)
         {
+            return ToBytes(packet, null);
+        }
+        public static byte[] ToBytes(string packet, ITranslator translator)
+        {
             for (int i = 0; i <= 13; i++)
             {
                 packet = packet.Replace(
                     "[" + i + "]", ((char)i).ToString());
             }
 
-            MatchCollection matches = _valueGrabber.Matches(packet);
-            foreach (Match match in matches)
+            if (translator != null)
             {
-                string type = match.Groups["type"].Value;
+                MatchCollection constantMatches = _fieldGrabber.Matches(packet);
+                foreach (Match match in constantMatches)
+                {
+                    string field = match.Groups["field"].Value.ToLower();
+                    packet = packet.Replace($"%{field}%", translator.Print(field));
+                }
+            }
+
+            MatchCollection paramMatches = _paramGrabber.Matches(packet);
+            foreach (Match match in paramMatches)
+            {
+                string type = match.Groups["type"].Value.ToLower();
                 string value = match.Groups["value"].Value;
 
                 byte[] data = null;
-                #region Switch: type
-                switch (type)
+                if (translator?.IsTranslatingPrimitives ?? false)
                 {
-                    case "s":
+                    data = translator.Translate((type.StartsWith("$") ?
+                        type.Substring(1) : type), value);
+                }
+                else
+                {
+                    switch (type)
+                    {
+                        default:
+                        {
+                            // Jump over the '$' character.
+                            data = translator?.Translate(type.Substring(1), value);
+                            break;
+                        }
+                        case "s":
                         {
                             data = BigEndian.GetBytes(value);
                             break;
                         }
-                    case "u":
+                        case "u":
                         {
-                            ushort uValue = 0;
-                            ushort.TryParse(value, out uValue);
+                            ushort.TryParse(value, out ushort uValue);
                             data = BigEndian.GetBytes(uValue);
                             break;
                         }
-                    case "i":
+                        case "i":
                         {
-                            int iValue = 0;
-                            int.TryParse(value, out iValue);
+                            int.TryParse(value, out int iValue);
                             data = BigEndian.GetBytes(iValue);
                             break;
                         }
-                    case "b":
+                        case "d":
                         {
-                            byte bValue = 0;
-                            if (!byte.TryParse(value, out bValue))
-                            {
-                                data = BigEndian.GetBytes(
-                                    (value.ToLower() == "true"));
-                            }
-                            else data = new byte[] { bValue };
+                            double.TryParse(value, out double dValue);
+                            data = BigEndian.GetBytes(dValue);
                             break;
                         }
+                        case "b":
+                        {
+                            if (!byte.TryParse(value, out byte bValue))
+                            {
+                                data = BigEndian.GetBytes(
+                                    (value.Trim().ToLower() == "true"));
+                            }
+                            else data = new[] { bValue };
+                            break;
+                        }
+                    }
                 }
-                #endregion
-
-                packet = packet.Replace(match.Value,
-                    Encoding.ASCII.GetString(data));
+                if (data != null)
+                {
+                    packet = packet.Replace(match.Value,
+                        Encoding.GetEncoding(0).GetString(data));
+                }
             }
             if (packet.StartsWith("{l}") && packet.Length >= 5)
             {
                 byte[] lengthData = BigEndian.GetBytes(packet.Length - 3);
-                packet = Encoding.ASCII.GetString(lengthData) + packet.Substring(3);
+                packet = Encoding.GetEncoding(0).GetString(lengthData) + packet.Substring(3);
             }
-            return Encoding.ASCII.GetBytes(packet);
+            return Encoding.GetEncoding(0).GetBytes(packet);
         }
 
         public static byte[] GetBytes(params object[] values)
@@ -483,18 +532,17 @@ namespace Photographer.Protocol
                     case TypeCode.Boolean: buffer.Add(Convert.ToByte((bool)value)); break;
                     case TypeCode.Int32: buffer.AddRange(BigEndian.GetBytes((int)value)); break;
                     case TypeCode.UInt16: buffer.AddRange(BigEndian.GetBytes((ushort)value)); break;
+                    case TypeCode.Double: buffer.AddRange(BigEndian.GetBytes((double)value)); break;
 
                     default:
                     case TypeCode.String:
-                        {
-                            byte[] data = value as byte[];
+                    {
+                        byte[] data =
+                            value as byte[] ?? BigEndian.GetBytes(value.ToString());
 
-                            if (data == null)
-                                data = BigEndian.GetBytes(value.ToString());
-
-                            buffer.AddRange(data);
-                            break;
-                        }
+                        buffer.AddRange(data);
+                        break;
+                    }
                 }
             }
             return buffer.ToArray();
@@ -511,6 +559,61 @@ namespace Photographer.Protocol
             Buffer.BlockCopy(headerData, 0, buffer, 4, 2);
             Buffer.BlockCopy(body, 0, buffer, 6, body.Length);
             return buffer;
+        }
+
+        public void Skip(string pattern)
+        {
+            MatchCollection matches =
+                Regex.Matches(pattern, @"{(?<type>s|i|b|d)(:(?<quant>\d+))?\}");
+
+            for (int i = 0; i < matches.Count;)
+            {
+                Match match = matches[i];
+                string typeG = match.Groups["type"].Value;
+
+                int quant = 1;
+                string quantG = match.Groups["quant"].Value;
+                if (!string.IsNullOrWhiteSpace(quantG) &&
+                    !int.TryParse(quantG, out quant))
+                {
+                    quant = 1;
+                }
+
+                for (int j = 0; j < quant; j++, i++)
+                {
+                    switch (typeG)
+                    {
+                        case "s":
+                        ReadString();
+                        break;
+
+                        case "i":
+                        ReadInteger();
+                        break;
+
+                        case "b":
+                        ReadBoolean();
+                        break;
+                        case "d":
+                        ReadDouble();
+                        break;
+                    }
+                }
+            }
+        }
+        public T ReadAfter<T>(string pattern)
+        {
+            Skip(pattern);
+
+            switch (Type.GetTypeCode(typeof(T)))
+            {
+                case TypeCode.String: return (T)(object)ReadString();
+                case TypeCode.Int32: return (T)(object)ReadInteger();
+                case TypeCode.Byte: return (T)(object)ReadBytes(1);
+                case TypeCode.Boolean: return (T)(object)ReadBoolean();
+                case TypeCode.Double: return (T)(object)ReadDouble();
+                default: return default(T);
+            }
         }
     }
 }

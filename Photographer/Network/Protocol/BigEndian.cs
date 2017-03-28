@@ -1,26 +1,15 @@
 ﻿using System;
 using System.Text;
 
-namespace Photographer.Protocol
+namespace Photographer.Network.Protocol
 {
-    /// <summary>
-    /// Converts base data types to an array of bytes in the big-endian byte order, and an array of bytes in the big-endian byte order to base data types.
-    /// </summary>
     public static class BigEndian
     {
-        public static int GetSize(int value) => 4;
-        public static int GetSize(bool value) => 1;
-        public static int GetSize(ushort value) => 2;
         public static int GetSize(string value)
         {
-            return Encoding.UTF8.GetByteCount(value) + 2;
+            return (Encoding.UTF8.GetByteCount(value) + 2);
         }
 
-        /// <summary>
-        /// Returns the specified 32-bit signed integer value as an array of bytes in the big-endian byte order.
-        /// </summary>
-        /// <param name="value">The number to convert.</param>
-        /// <returns></returns>
         public static byte[] GetBytes(int value)
         {
             var buffer = new byte[4];
@@ -37,11 +26,12 @@ namespace Photographer.Protocol
 
             return buffer;
         }
-        /// <summary>
-        /// Returns the specified 16-bit unsigned integer value as an array of bytes in the big-endian byte order.
-        /// </summary>
-        /// <param name="value">The number to convert.</param>
-        /// <returns></returns>
+        public static byte[] GetBytes(double value)
+        {
+            byte[] data = BitConverter.GetBytes(value);
+            Array.Reverse(data);
+            return data;
+        }
         public static byte[] GetBytes(ushort value)
         {
             var buffer = new byte[2];
@@ -61,12 +51,6 @@ namespace Photographer.Protocol
             return buffer;
         }
 
-        /// <summary>
-        /// Returns a 32-bit signed integer converted from four bytes at a specified position in a byte array using the big-endian byte order.
-        /// </summary>
-        /// <param name="value">An array of bytes in the big-endian byte order.</param>
-        /// <param name="startIndex">The starting position within the value.</param>
-        /// <returns></returns>
         public static int ToInt32(byte[] value, int startIndex)
         {
             int result = (value[startIndex++] << 24);
@@ -77,14 +61,16 @@ namespace Photographer.Protocol
         }
         public static bool ToBoolean(byte[] value, int startIndex)
         {
-            return value[startIndex] == 1;
+            return (value[startIndex] == 1);
         }
-        /// <summary>
-        /// Returns a 16-bit unsigned integer converted from two bytes at a specified position in a byte array using the big-endian byte order.
-        /// </summary>
-        /// <param name="value">An array of bytes in the big-endian byte order.</param>
-        /// <param name="startIndex">The starting position within the value.</param>
-        /// <returns></returns>
+        public static double ToDouble(byte[] value, int startIndex)
+        {
+            var copy = new byte[value.Length - startIndex];
+            Buffer.BlockCopy(value, startIndex, copy, 0, copy.Length);
+
+            Array.Reverse(copy);
+            return BitConverter.ToDouble(copy, 0);
+        }
         public static ushort ToUInt16(byte[] value, int startIndex)
         {
             int result = (value[startIndex++] << 8);
